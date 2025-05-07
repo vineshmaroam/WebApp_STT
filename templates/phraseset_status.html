@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PhraseSet Status</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <h1>Current PhraseSet Content</h1>
+    <p>PhraseSet: <strong>{{ phrase_set_name }}</strong></p>
+
+    <h2>Phrases</h2>
+    {% if phrases %}
+    <table>
+        <tr>
+            <th>Phrase</th>
+            <th>Boost</th>
+        </tr>
+        {% for phrase in phrases %}
+        <tr>
+            <td>{{ phrase.value }}</td>
+            <td>{{ phrase.boost }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p>No phrases found in PhraseSet</p>
+    {% endif %}
+
+    <p><a href="/">Back to main page</a></p>
+</body>
+</html>
