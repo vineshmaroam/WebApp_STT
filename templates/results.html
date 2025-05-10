@@ -11,10 +11,42 @@
         a { color: #0066cc; text-decoration: none; display: inline-block; margin-top: 15px; }
         .instruction { background: #f0f7ff; padding: 10px; border-left: 4px solid #4CAF50; margin-bottom: 15px; }
         .phrase-set-info { background: #e7f4ff; padding: 10px; border-left: 4px solid #2196F3; margin-bottom: 15px; }
+        .alert {
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .alert-info {
+            background-color: #d9edf7;
+            border-left: 4px solid #31708f;
+        }
+        .alert-warning {
+            background-color: #fcf8e3;
+            border-left: 4px solid #8a6d3b;
+        }
+        .word-confidence {
+            margin: 10px 0;
+            line-height: 1.8;
+        }
+        .word {
+            display: inline-block;
+            margin-right: 8px;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        .low-confidence {
+            background-color: #ffdddd;
+        }
     </style>
 </head>
 <body>
     <h1>Transcription Results</h1>
+
+    {% if was_chunked %}
+    <div class="alert alert-warning">
+        Note: Your large audio file was processed in {{ transcripts|length }} segments
+    </div>
+    {% endif %}
 
     <div class="phrase-set-info">
         <p>New words will be added to your personal phrase set: <strong>user-{{ session.user_id }}-phrases</strong></p>
@@ -28,7 +60,22 @@
         {% if transcripts %}
             {% for item in transcripts %}
             <div class="transcript">
-                <p>Original: {{ item.transcript }} <span class="confidence">(Confidence: {{ item.confidence }})</span></p>
+                {% if item.original %}
+                    <p>Original: {{ item.original }} <span class="confidence">(Confidence: {{ item.confidence }})</span></p>
+                {% endif %}
+                <p>Transcript: {{ item.transcript }}</p>
+                
+                {% if item.words %}
+                <div class="word-confidence">
+                    Word-level confidence:
+                    {% for word in item.words %}
+                    <span class="word {% if word.confidence < 0.7 %}low-confidence{% endif %}">
+                        {{ word.word }} <small>({{ word.confidence|float|round(2) }})</small>
+                    </span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                
                 <textarea class="edit-area" name="corrected_text">{{ item.transcript }}</textarea>
                 <input type="hidden" name="original_text" value="{{ item.transcript }}">
             </div>

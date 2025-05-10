@@ -1,19 +1,40 @@
 import os
 import json
-from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from pymongo import MongoClient
 from google.oauth2 import service_account
 from google.cloud import speech_v1p1beta1 as speech
+import google.generativeai as genai
 from google.cloud.speech_v1p1beta1 import AdaptationClient
 from google.auth.transport.requests import Request
 from google.protobuf import field_mask_pb2
 import tempfile
 from functools import wraps
+from flask import jsonify
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24).hex()
+
+# Initialize Gemini
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+gemini_model = genai.GenerativeModel('gemini-pro')
+
+def enhance_with_gemini(transcript):
+    """Use Gemini to correct and format the transcript."""
+    prompt = f"""
+    Correct any errors in this medical transcript while preserving technical terms:
+    {transcript}
+
+    Output ONLY the corrected text with no additional commentary:
+    """
+    try:
+        response = gemini_model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"Gemini error: {str(e)}")
+        return transcript  # Fallback to original
 
 # Configuration
 UPLOAD_FOLDER = tempfile.gettempdir()
@@ -24,10 +45,20 @@ STOP_WORDS = {'a', 'an', 'the', 'and', 'or', 'but', 'to', 'of', 'at', 'in', 'on'
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# MongoDB Setup
+import sys
+if 'pymongo' in sys.modules:
+    del sys.modules['pymongo']
+
 def get_mongo_client():
+    import os
+    from importlib import reload
+    reload(os)  # Forces reload of environment variables
+
     connection_string = os.getenv('MONGODB_URI')
     if not connection_string:
         raise ValueError("MONGODB_URI environment variable not set")
+    #connection_string = "mongodb+srv://laldeomaroam:1sXgyHuDra1b7rA2@cluster0.svenc6y.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" 
     return MongoClient(connection_string)
 
 def get_db():
@@ -236,51 +267,118 @@ def transcribe():
         return redirect(url_for('index'))
 
     try:
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(filepath)
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(file.filename)[1]) as tmp:
+            file.save(tmp.name)
+            
+            # Check file size (10MB limit for Google STT)
+            file_size = os.path.getsize(tmp.name)
+            if file_size > 10 * 1024 * 1024:  # 10MB in bytes
+                return process_large_audio(tmp.name)
+            
+            # Process small files normally
+            return process_small_audio(tmp.name)
 
-        creds_info = get_credentials()
-        credentials = service_account.Credentials.from_service_account_info(creds_info)
-        speech_client = speech.SpeechClient(credentials=credentials)
-
-        with open(filepath, 'rb') as audio_file:
-            content = audio_file.read()
-        audio = speech.RecognitionAudio(content=content)
-
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=16000,
-            language_code="en-US",
-            adaptation=speech.SpeechAdaptation(
-                phrase_set_references=[
-                    f"projects/{os.getenv('PROJECT_ID')}/locations/global/phraseSets/{get_user_phrase_set_id(session['user_id'])}"
-                ]
-            ),
-            use_enhanced=True,
-            model="latest_long" # Use the latest_long audio model instead of the latest_short audio model
-        )
-
-        response = speech_client.recognize(config=config, audio=audio)
-        transcripts = []
-        for result in response.results:
-            if result.alternatives:
-                transcript = result.alternatives[0].transcript
-                confidence = result.alternatives[0].confidence
-                transcripts.append({
-                    'transcript': transcript,
-                    'confidence': f"{confidence:.0%}"
-                })
-
-        if not transcripts:
-            flash("No speech detected")
-            return redirect(url_for('index'))
-
-        return render_template('results.html', transcripts=transcripts)
     except Exception as e:
         flash(f'Transcription failed: {str(e)}')
         return redirect(url_for('index'))
 
+def process_small_audio(filepath):
+    """Process audio files under 10MB"""
+    creds_info = get_credentials()
+    credentials = service_account.Credentials.from_service_account_info(creds_info)
+    speech_client = speech.SpeechClient(credentials=credentials)
+
+    with open(filepath, 'rb') as audio_file:
+        content = audio_file.read()
+
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=16000,
+        language_code="en-US",
+        adaptation=speech.SpeechAdaptation(
+            phrase_set_references=[
+                f"projects/{os.getenv('PROJECT_ID')}/locations/global/phraseSets/{get_user_phrase_set_id(session['user_id'])}"
+            ]
+        ),
+        use_enhanced=True,
+        model="latest_long"
+    )
+
+    audio = speech.RecognitionAudio(content=content)
+    response = speech_client.recognize(config=config, audio=audio)
+    return process_response(response)
+
+def process_large_audio(filepath):
+    """Process audio files over 10MB using chunking"""
+    try:
+        # Convert/compress audio first (requires ffmpeg)
+        compressed_path = compress_audio(filepath)
+        
+        # Use async long-running recognition
+        operation = long_running_recognize(compressed_path)
+        return process_response(operation.result())
+        
+    finally:
+        if os.path.exists(compressed_path):
+            os.remove(compressed_path)
+
+def compress_audio(input_path):
+    """Convert audio to FLAC with 16kHz sample rate"""
+    output_path = f"{input_path}_compressed.flac"
+    subprocess.run([
+        'ffmpeg', '-i', input_path,
+        '-ar', '16000',  # Sample rate
+        '-ac', '1',       # Mono channel
+        '-y',             # Overwrite
+        output_path
+    ], check=True)
+    return output_path
+
+def long_running_recognize(filepath):
+    """Async processing for large files"""
+    client = speech.SpeechClient(credentials=get_credentials())
+    
+    with open(filepath, 'rb') as audio_file:
+        content = audio_file.read()
+
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.FLAC,
+        sample_rate_hertz=16000,
+        language_code="en-US",
+        enable_automatic_punctuation=True,
+        adaptation=speech.SpeechAdaptation(
+            phrase_set_references=[
+                f"projects/{os.getenv('PROJECT_ID')}/locations/global/phraseSets/{get_user_phrase_set_id(session['user_id'])}"
+            ]
+        ),
+        model="latest_long"
+    )
+
+    audio = speech.RecognitionAudio(content=content)
+    return client.long_running_recognize(config=config, audio=audio)
+
+def process_response(response):
+    """Process both sync and async responses"""
+    transcripts = []
+    for result in response.results:
+        if result.alternatives:
+            raw_text = result.alternatives[0].transcript
+            confidence = result.alternatives[0].confidence
+            
+            enhanced_text = enhance_with_gemini(raw_text) if confidence < 0.9 else raw_text
+            
+            transcripts.append({
+                'transcript': enhanced_text,
+                'original': raw_text,
+                'confidence': f"{confidence:.0%}"
+            })
+
+    if not transcripts:
+        flash("No speech detected")
+        return redirect(url_for('index'))
+    
+    return render_template('results.html', transcripts=transcripts)
 @app.route('/submit_corrections', methods=['POST'])
 @login_required
 def submit_corrections():
@@ -321,6 +419,58 @@ def submit_corrections():
     except Exception as e:
         flash(f"Error submitting corrections: {str(e)}")
         return redirect(url_for('index'))
+# Add this new route to handle audio blob uploads
+@app.route('/upload_audio_blob', methods=['POST'])
+@login_required
+def upload_audio_blob():
+    if 'audio_data' not in request.files:
+        return jsonify({'error': 'No audio file received'}), 400
 
+    audio_file = request.files['audio_data']
+    if audio_file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    try:
+        # Save the audio blob to a temporary file
+        filename = secure_filename(f"recording_{session['user_id']}.wav")
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        audio_file.save(filepath)
+
+        # Process the audio file with Google Speech-to-Text
+        creds_info = get_credentials()
+        credentials = service_account.Credentials.from_service_account_info(creds_info)
+        speech_client = speech.SpeechClient(credentials=credentials)
+
+        with open(filepath, 'rb') as audio_file:
+            content = audio_file.read()
+        audio = speech.RecognitionAudio(content=content)
+
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+            sample_rate_hertz=48000,  # Changed to match browser recording
+            language_code="en-US",
+            adaptation=speech.SpeechAdaptation(
+                phrase_set_references=[
+                    f"projects/{os.getenv('PROJECT_ID')}/locations/global/phraseSets/{get_user_phrase_set_id(session['user_id'])}"
+                ]
+            ),
+            use_enhanced=True,
+            model="latest_long"
+        )
+
+        response = speech_client.recognize(config=config, audio=audio)
+        transcripts = []
+        for result in response.results:
+            if result.alternatives:
+                transcript = result.alternatives[0].transcript
+                confidence = result.alternatives[0].confidence
+                transcripts.append({
+                    'transcript': transcript,
+                    'confidence': f"{confidence:.0%}"
+                })
+
+        return jsonify({'transcripts': transcripts})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
