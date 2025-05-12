@@ -58,7 +58,7 @@ def get_mongo_client():
     connection_string = os.getenv('MONGODB_URI')
     if not connection_string:
         raise ValueError("MONGODB_URI environment variable not set")
-    #connection_string = "mongodb+srv://laldeomaroam:1sXgyHuDra1b7rA2@cluster0.svenc6y.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" 
+    
     return MongoClient(connection_string)
 
 def get_db():
