@@ -37,10 +37,35 @@
         .low-confidence {
             background-color: #ffdddd;
         }
+        .audio-player {
+            margin: 15px 0;
+            padding: 10px;
+            background: #f0f8ff;
+            border-radius: 5px;
+        }
+        .btn-download {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            margin-top: 5px;
+            cursor: pointer;
+        }
+        .audio-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .voice-selector {
+            padding: 5px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
     </style>
 </head>
 <body>
-    <h1>Transcription Results</h1>
+    <h1>Transcription Results with DeepGram</h1>
 
     {% if was_chunked %}
     <div class="alert alert-warning">
@@ -75,7 +100,31 @@
                     {% endfor %}
                 </div>
                 {% endif %}
-                
+
+                {% if item.audio_content %}
+                <div class="audio-player">
+                    <h4>Audio Playback</h4>
+                    <audio controls id="audio-{{ loop.index }}">
+                        <!-- <source src="data:audio/wav;base64,{{ item.audio_content }}" type="audio/wav"> -->
+                         <source src="data:audio/mp3;base64,{{ item.audio_content }}" type="audio/mp3">
+                        Your browser does not support the audio element.
+                    </audio>
+                    <div class="audio-controls">
+                        <select class="voice-selector" onchange="changeVoice(this, '{{ loop.index }}')">
+                            <option value="aura-asteria-en">Female Voice (Asteria)</option>
+                            <option value="aura-luna-en">Female Voice (Luna)</option>
+                            <option value="aura-stella-en">Female Voice (Stella)</option>
+                            <option value="aura-orion-en">Male Voice (Orion)</option>
+                            <option value="aura-arcas-en">Male Voice (Arcas)</option>
+                        </select>
+                        <button type="button" onclick="downloadAudio('{{ loop.index }}', '{{ item.transcript|truncate(20) }}')" 
+                                class="btn-download">
+                            Download Audio
+                        </button>
+                    </div>
+                </div>
+                {% endif %}
+
                 <textarea class="edit-area" name="corrected_text">{{ item.transcript }}</textarea>
                 <input type="hidden" name="original_text" value="{{ item.transcript }}">
             </div>
@@ -93,5 +142,45 @@
     </form>
 
     <a href="/">Back to main page</a>
+
+    <script>
+        function downloadAudio(index, filename) {
+            const audioElement = document.getElementById(`audio-${index}`);
+            const source = audioElement.querySelector('source').src;
+            const link = document.createElement('a');
+            link.href = source;
+            link.download = `tts-${filename.replace(/[^a-z0-9]/gi, '_')}.mp3`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function changeVoice(selectElement, index) {
+            const transcript = document.querySelectorAll('.transcript')[index-1].querySelector('p').textContent.replace('Transcript: ', '');
+            const voice = selectElement.value;
+            
+            fetch('/generate_tts', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    text: transcript,
+                    voice: voice,
+                    index: index
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.audio_content) {
+                    const audioElement = document.getElementById(`audio-${index}`);
+                    const sourceElement = audioElement.querySelector('source');
+                    sourceElement.src = `data:audio/mpeg;base64,${data.audio_content}`;
+                    audioElement.load();
+                }
+            })
+            .catch(error => console.error('Error:', error));
+        }
+    </script>
 </body>
 </html>

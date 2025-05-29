@@ -1,13 +1,11 @@
 Flask==2.0.1
 pymongo==4.3.3
 dnspython==2.3.0
-python-dotenv==1.0.0  # For local .env management
-google-auth==2.3.3
-google-cloud-speech==2.13.1
-google-generativeai==0.3.2  # Gemini API
+python-dotenv==1.0.0
 werkzeug==2.0.1
-protobuf==4.23.4
-sift-stack-py
-gunicorn==20.1.0  # Add this for production WSGI server
-pydub==0.25.1
+deepgram-sdk==2.*
+
 ffmpeg-python==0.2.0
+gunicorn==20.1.0
+requests==2.31.0
+gtts==2.3.1

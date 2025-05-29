@@ -4,65 +4,42 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from pymongo import MongoClient
-from google.oauth2 import service_account
-from google.cloud import speech_v1p1beta1 as speech
-import google.generativeai as genai
-from google.cloud.speech_v1p1beta1 import AdaptationClient
-from google.auth.transport.requests import Request
-from google.protobuf import field_mask_pb2
 import tempfile
 from functools import wraps
-from flask import jsonify
+import subprocess
+import base64
+from deepgram import Deepgram
+import datetime
+import requests
+from gtts import gTTS
+import io
+
+def base64_encode(value):
+    return base64.b64encode(value).decode('utf-8')
+
+app = Flask(__name__)
+app.secret_key = os.urandom(24).hex()
+app.jinja_env.filters['b64encode'] = base64_encode
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24).hex()
 
-# Initialize Gemini
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-gemini_model = genai.GenerativeModel('gemini-pro')
+# Initialize Deepgram
+dg_stt_client = Deepgram(os.getenv("DEEPGRAM_API_KEY"))
+DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak"
+DEEPGRAM_TTS_API_KEY = os.getenv("DEEPGRAM_API_KEY") 
 
-def enhance_with_gemini(transcript):
-    """Use Gemini to correct and format the transcript."""
-    prompt = f"""
-    Correct any errors in this medical transcript while preserving technical terms:
-    {transcript}
-
-    Output ONLY the corrected text with no additional commentary:
-    """
-    try:
-        response = gemini_model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        print(f"Gemini error: {str(e)}")
-        return transcript  # Fallback to original
 
 # Configuration
 UPLOAD_FOLDER = tempfile.gettempdir()
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'flac'}
-STOP_WORDS = {'a', 'an', 'the', 'and', 'or', 'but', 'to', 'of', 'at', 'in', 'on'}
 
 # Helper Functions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# MongoDB Setup
-import sys
-if 'pymongo' in sys.modules:
-    del sys.modules['pymongo']
-
-def get_mongo_client():
-    import os
-    from importlib import reload
-    reload(os)  # Forces reload of environment variables
-
-    connection_string = os.getenv('MONGODB_URI')
-    if not connection_string:
-        raise ValueError("MONGODB_URI environment variable not set")
-    
-    return MongoClient(connection_string)
-
 def get_db():
-    client = get_mongo_client()
+    client = MongoClient(os.getenv("MONGODB_URI"))
     return client.speech_app
 
 def login_required(f):
@@ -73,81 +50,100 @@ def login_required(f):
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
+# Add this new function to generate TTS audio
+# def generate_tts(text, voice="aura-asteria-en"):
+#     try:
+#         print(f"Generating TTS for: {text[:50]}...")  # Debug
+#         headers = {
+#             "Authorization": f"Token {DEEPGRAM_TTS_API_KEY}",
+#             "Content-Type": "application/json"
+#         }
+        
+#         payload = {
+#             "text": text,
+#             "model": voice,  # Default voice
+#             "encoding": "linear16",
+#             "container": "wav"
+#         }
+#         print(f"Sending TTS request to Deepgram with payload: {payload}")  # Debug
+#         response = requests.post(
+#             DEEPGRAM_TTS_URL,
+#             headers=headers,
+#             json=payload
+#         )
+#         print(f"TTS response status: {response.status_code}")  # Debug
+#         if response.status_code == 200:
+#             print("TTS generation successful")
+#             return base64.b64encode(response.content).decode('utf-8')
+#         else:
+#             print(f"TTS API Error: {response.status_code} - {response.text}")
+#             return None
+#     except Exception as e:
+#         print(f"TTS Generation Error: {str(e)}")
+#         return None      
 
-def get_user_phrase_set_id(user_id):
-    return f"user-{user_id}-phrases"
-
-# Google Cloud Setup
-def get_credentials():
-    creds_json = os.getenv('GOOGLE_CREDENTIALS')
-    if not creds_json:
-        raise ValueError("GOOGLE_CREDENTIALS environment variable not set")
-    return json.loads(creds_json)
-
-def get_adaptation_client():
-    creds_info = get_credentials()
-    creds = service_account.Credentials.from_service_account_info(creds_info)
-    if creds.expired:
-        creds.refresh(Request())
-    return AdaptationClient(credentials=creds)
-
-def initialize_user_phrase_set(user_id):
+def generate_tts(text, lang='en'):
+    """Generate TTS audio using Google's TTS API"""
     try:
-        client = get_adaptation_client()
-        project_id = os.getenv('PROJECT_ID')
-        phrase_set_id = get_user_phrase_set_id(user_id)
-        phrase_set_name = f"projects/{project_id}/locations/global/phraseSets/{phrase_set_id}"
-
-        try:
-            client.get_phrase_set(name=phrase_set_name)
-        except Exception:
-            phrase_set = speech.PhraseSet(name=phrase_set_name, phrases=[])
-            parent = f"projects/{project_id}/locations/global"
-            operation = client.create_phrase_set(
-                parent=parent,
-                phrase_set_id=phrase_set_id,
-                phrase_set=phrase_set
-            )
-            operation.result(timeout=30)
+        print(f"Generating Google TTS for: {text[:100]}...")
+        
+        # Create in-memory file
+        mp3_fp = io.BytesIO()
+        
+        # Generate TTS
+        tts = gTTS(text=text, lang=lang, slow=False)
+        tts.write_to_fp(mp3_fp)
+        mp3_fp.seek(0)
+        
+        # Convert to base64 for embedding in HTML
+        audio_content = base64.b64encode(mp3_fp.read()).decode('utf-8')
+        print("Google TTS generation successful")
+        return audio_content
+        
     except Exception as e:
-        print(f"Error initializing PhraseSet: {str(e)}")
+        print(f"Google TTS Generation Error: {str(e)}")
+        return None  
 
-def update_user_phrases_in_stt(user_id):
+def estimate_audio_duration(filepath):
+    """Estimate audio duration using ffprobe"""
     try:
-        db = get_db()
-        phrases = list(db.phrases.find({"user_id": user_id}, {'_id': 0}))
-
-        if not phrases:
-            return False
-
-        stt_phrases = [{
-            "value": p["phrase"],
-            "boost": float(p["boost"])
-        } for p in phrases]
-
-        client = get_adaptation_client()
-        project_id = os.getenv('PROJECT_ID')
-        phrase_set_id = get_user_phrase_set_id(user_id)
-        phrase_set_name = f"projects/{project_id}/locations/global/phraseSets/{phrase_set_id}"
-
-        phrase_set = speech.PhraseSet(
-            name=phrase_set_name,
-            phrases=stt_phrases
-        )
-
-        update_mask = field_mask_pb2.FieldMask()
-        update_mask.paths.append("phrases")
-
-        operation = client.update_phrase_set(
-            phrase_set=phrase_set,
-            update_mask=update_mask
-        )
-        operation.result(timeout=30)
-        return True
-    except Exception as e:
-        print(f"PhraseSet update failed: {str(e)}")
-        return False
-
+        result = subprocess.run([
+            'ffprobe', '-v', 'error', '-show_entries',
+            'format=duration', '-of',
+            'default=noprint_wrappers=1:nokey=1', filepath
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return float(result.stdout)
+    except:
+        return 0  # Fallback if ffprobe fails
+    
+# Add this new function to generate TTS audio
+# @app.route('/generate_tts', methods=['POST'])
+# @login_required
+# def handle_tts_generation():
+#     data = request.json
+#     audio_content = generate_tts(data['text'], data['voice'])
+#     return jsonify({
+#         'audio_content': audio_content,
+#         'index': data['index']
+#     })
+@app.route('/generate_tts', methods=['POST'])
+@login_required
+def handle_tts_generation():
+    data = request.json
+    # Map Deepgram voices to Google TTS languages
+    voice_map = {
+        'aura-asteria-en': 'en',
+        'aura-luna-en': 'en',
+        'aura-stella-en': 'en',
+        'aura-orion-en': 'en',
+        'aura-arcas-en': 'en'
+    }
+    lang = voice_map.get(data['voice'], 'en')
+    audio_content = generate_tts(data['text'], lang)
+    return jsonify({
+        'audio_content': audio_content,
+        'index': data['index']
+    })
 # Auth Routes
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -164,9 +160,6 @@ def register():
             "username": username,
             "password": generate_password_hash(password)
         }).inserted_id
-
-        # Initialize phrase set for new user
-        initialize_user_phrase_set(str(user_id))
 
         flash("Registration successful! Please login")
         return redirect(url_for('login'))
@@ -220,11 +213,7 @@ def add_phrase():
                 "phrase": phrase,
                 "boost": boost_value
             })
-
-            if update_user_phrases_in_stt(session['user_id']):
-                flash("Phrase added successfully!")
-            else:
-                flash("Phrase added but failed to update PhraseSet")
+            flash("Phrase added successfully!")
         else:
             flash("Phrase already exists")
 
@@ -244,11 +233,7 @@ def delete_phrase(phrase):
             "user_id": session['user_id'],
             "phrase": phrase
         })
-
-        if update_user_phrases_in_stt(session['user_id']):
-            flash("Phrase deleted successfully!")
-        else:
-            flash("Phrase deleted but failed to update PhraseSet")
+        flash("Phrase deleted successfully!")
     except Exception as e:
         flash(f"Error deleting phrase: {str(e)}")
 
@@ -257,11 +242,14 @@ def delete_phrase(phrase):
 @app.route('/transcribe', methods=['POST'])
 @login_required
 def transcribe():
+    print("Transcribe endpoint hit")  # Debug
     if 'file' not in request.files:
         flash('No file selected')
         return redirect(url_for('index'))
 
     file = request.files['file']
+    print(f"File received: {file.filename}")  # Debug
+
     if file.filename == '' or not allowed_file(file.filename):
         flash('Invalid file')
         return redirect(url_for('index'))
@@ -269,157 +257,153 @@ def transcribe():
     try:
         # Save to temp file
         with tempfile.NamedTemporaryFile(suffix=os.path.splitext(file.filename)[1]) as tmp:
+            print(f"Saving to temp file: {tmp.name}")  # Debug
             file.save(tmp.name)
-            
-            # Check file size (10MB limit for Google STT)
-            file_size = os.path.getsize(tmp.name)
-            if file_size > 10 * 1024 * 1024:  # 10MB in bytes
-                return process_large_audio(tmp.name)
-            
-            # Process small files normally
-            return process_small_audio(tmp.name)
+            return process_audio_with_deepgram(tmp.name)
 
     except Exception as e:
+        print(f"Transcription failed with error: {str(e)}")  # Debug
         flash(f'Transcription failed: {str(e)}')
         return redirect(url_for('index'))
 
-def process_small_audio(filepath):
-    """Process audio files under 10MB"""
-    creds_info = get_credentials()
-    credentials = service_account.Credentials.from_service_account_info(creds_info)
-    speech_client = speech.SpeechClient(credentials=credentials)
-
-    with open(filepath, 'rb') as audio_file:
-        content = audio_file.read()
-
-    config = speech.RecognitionConfig(
-        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-        sample_rate_hertz=16000,
-        language_code="en-US",
-        adaptation=speech.SpeechAdaptation(
-            phrase_set_references=[
-                f"projects/{os.getenv('PROJECT_ID')}/locations/global/phraseSets/{get_user_phrase_set_id(session['user_id'])}"
-            ]
-        ),
-        use_enhanced=True,
-        model="latest_long"
-    )
-
-    audio = speech.RecognitionAudio(content=content)
-    response = speech_client.recognize(config=config, audio=audio)
-    return process_response(response)
-
-def process_large_audio(filepath):
-    """Process audio files over 10MB using chunking"""
-    try:
-        # Convert/compress audio first (requires ffmpeg)
-        compressed_path = compress_audio(filepath)
-        
-        # Use async long-running recognition
-        operation = long_running_recognize(compressed_path)
-        return process_response(operation.result())
-        
-    finally:
-        if os.path.exists(compressed_path):
-            os.remove(compressed_path)
-
-def compress_audio(input_path):
-    """Convert audio to FLAC with 16kHz sample rate"""
-    output_path = f"{input_path}_compressed.flac"
-    subprocess.run([
-        'ffmpeg', '-i', input_path,
-        '-ar', '16000',  # Sample rate
-        '-ac', '1',       # Mono channel
-        '-y',             # Overwrite
-        output_path
-    ], check=True)
-    return output_path
-
-def long_running_recognize(filepath):
-    """Async processing for large files"""
-    client = speech.SpeechClient(credentials=get_credentials())
+def process_audio_with_deepgram(filepath):
+    """Process audio files with Deepgram"""
+    # Check file duration
+    duration = estimate_audio_duration(filepath)
     
-    with open(filepath, 'rb') as audio_file:
-        content = audio_file.read()
+    if duration > 60:  # More than 1 minute
+        return process_long_audio(filepath)
+    else:
+        return process_short_audio(filepath)
 
-    config = speech.RecognitionConfig(
-        encoding=speech.RecognitionConfig.AudioEncoding.FLAC,
-        sample_rate_hertz=16000,
-        language_code="en-US",
-        enable_automatic_punctuation=True,
-        adaptation=speech.SpeechAdaptation(
-            phrase_set_references=[
-                f"projects/{os.getenv('PROJECT_ID')}/locations/global/phraseSets/{get_user_phrase_set_id(session['user_id'])}"
-            ]
-        ),
-        model="latest_long"
-    )
+def process_short_audio(filepath):
+    """Process short audio files (<1 min) synchronously"""
+    try:
+        print(f"Processing short audio: {filepath}")  # Debug
+        with open(filepath, 'rb') as audio:
+            source = {'buffer': audio, 'mimetype': 'audio/' + filepath.split('.')[-1]}
+        
+            db = get_db()
+            user_phrases = list(db.phrases.find({"user_id": session['user_id']}, {'_id': 0}))
+            phrases = [p["phrase"] for p in user_phrases]
+        
+            options = {
+                "model": "nova-2",
+                "language": "en-US",
+                "punctuate": True,
+                "utterances": True,
+                "diarize": False,
+                "smart_format": True,
+                "custom_keywords": phrases if phrases else None
+            }
+            print(f"Sending to Deepgram with options: {options}")  # Debug
+            
+            # Make the API call and get response
+            response = dg_stt_client.transcription.sync_prerecorded(source, options)
+            print(f"Received Deepgram response: {response}")  # Debug
+            
+            if 'results' not in response:
+                flash("No speech detected")
+                return redirect(url_for('index'))
+            
+            return process_deepgram_response(response)
+    
+    except Exception as e:
+        print(f"Error in process_short_audio: {str(e)}")  # Debug
+        flash(f"Transcription failed: {str(e)}")
+        return redirect(url_for('index'))
+    
+def process_long_audio(filepath):
+    """Process long audio files (>1 min) asynchronously"""
+    try:
+        # For demo purposes, we'll just use the local file path
+        # In production, you'd upload to cloud storage first
+        file_url = f"file://{os.path.abspath(filepath)}"
+        
+        db = get_db()
+        user_phrases = list(db.phrases.find({"user_id": session['user_id']}, {'_id': 0}))
+        phrases = [p["phrase"] for p in user_phrases]
+        
+        options = {
+            "model": "nova-2",
+            "language": "en-US",
+            "punctuate": True,
+            "utterances": True,
+            "diarize": False,
+            "smart_format": True,
+            "custom_keywords": phrases if phrases else None,
+            "callback": f"{os.getenv('APP_URL')}/callback"  # Your callback endpoint
+        }
 
-    audio = speech.RecognitionAudio(content=content)
-    return client.long_running_recognize(config=config, audio=audio)
+        # Start async transcription
+        response = dg_stt_client.transcription.prerecorded(
+            {'url': file_url},
+            options
+        )
+        
+        # Store the request ID to track later
+        request_id = response.get('request_id')
+        if not request_id:
+            flash("Failed to start transcription")
+            return redirect(url_for('index'))
+            
+        # Store the request ID in the database to track later
+        db.transcription_requests.insert_one({
+            'user_id': session['user_id'],
+            'request_id': request_id,
+            'status': 'processing',
+            'created_at': datetime.datetime.now()
+        })
+        
+        flash("Your audio is being processed. We'll notify you when it's ready.")
+        return redirect(url_for('index'))
+        
+    except Exception as e:
+        flash(f"Transcription failed: {str(e)}")
+        return redirect(url_for('index'))
 
-def process_response(response):
-    """Process both sync and async responses"""
+def process_deepgram_response(response):
+    """Process Deepgram response"""
+    print("Processing Deepgram response...")  # Debug
     transcripts = []
-    for result in response.results:
-        if result.alternatives:
-            raw_text = result.alternatives[0].transcript
-            confidence = result.alternatives[0].confidence
-            
-            enhanced_text = enhance_with_gemini(raw_text) if confidence < 0.9 else raw_text
-            
-            transcripts.append({
-                'transcript': enhanced_text,
-                'original': raw_text,
-                'confidence': f"{confidence:.0%}"
-            })
+    
+    if 'results' not in response:
+        flash("No speech detected in audio")
+        return redirect(url_for('index'))
+    
+    for channel in response['results']['channels']:
+        for alternative in channel['alternatives']:
+            if 'transcript' in alternative:
+                 transcript_text = alternative['transcript']
+                 print(f"Processing transcript: {transcript_text[:100]}...")  # Debug
+                 
+                 # Generate TTS audio
+                 audio_content = generate_tts(transcript_text)
+                 
+                 if audio_content is None:
+                    print("Warning: TTS generation failed for transcript")
+                 # Build transcript item
+                 transcript_item = {
+                    'transcript': transcript_text,
+                    'original': transcript_text,
+                    'confidence': f"{alternative['confidence']:.0%}",
+                    'words': [{
+                        'word': word['word'],
+                        'confidence': word['confidence']
+                    } for word in alternative.get('words', [])],
+                    'audio_content': audio_content,  # This can be None if TTS failed
+                    'audio_format': 'wav'
+                }
+                
+                 print(f"Transcript item: {transcript_item.keys()}")  # Debug
+                 transcripts.append(transcript_item)
 
     if not transcripts:
         flash("No speech detected")
         return redirect(url_for('index'))
     
     return render_template('results.html', transcripts=transcripts)
-@app.route('/submit_corrections', methods=['POST'])
-@login_required
-def submit_corrections():
-    try:
-        corrected_texts = request.form.getlist('corrected_text')
-        original_texts = request.form.getlist('original_text')
-        boost_value = float(request.form.get('boost_value', 10))
 
-        changed_words = set()
-        for original, corrected in zip(original_texts, corrected_texts):
-            orig_words = set(original.lower().split())
-            corrected_words = set(corrected.lower().split())
-            changed_words.update(corrected_words - orig_words)
-
-        if not changed_words:
-            flash("No word changes detected")
-            return redirect(url_for('index'))
-
-        db = get_db()
-        added_count = 0
-
-        for word in changed_words:
-            if (len(word) > 2 and word.isalpha() and word not in STOP_WORDS):
-                if not db.phrases.find_one({"user_id": session['user_id'], "phrase": word}):
-                    db.phrases.insert_one({
-                        "user_id": session['user_id'],
-                        "phrase": word,
-                        "boost": boost_value
-                    })
-                    added_count += 1
-
-        if update_user_phrases_in_stt(session['user_id']):
-            flash(f"Added {added_count} new words to your PhraseSet!")
-        else:
-            flash("Added to database but failed to update PhraseSet")
-
-        return redirect(url_for('index'))
-    except Exception as e:
-        flash(f"Error submitting corrections: {str(e)}")
-        return redirect(url_for('index'))
-# Add this new route to handle audio blob uploads
 @app.route('/upload_audio_blob', methods=['POST'])
 @login_required
 def upload_audio_blob():
@@ -436,41 +420,67 @@ def upload_audio_blob():
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         audio_file.save(filepath)
 
-        # Process the audio file with Google Speech-to-Text
-        creds_info = get_credentials()
-        credentials = service_account.Credentials.from_service_account_info(creds_info)
-        speech_client = speech.SpeechClient(credentials=credentials)
+        with open(filepath, 'rb') as audio:
+            source = {'buffer': audio, 'mimetype': 'audio/wav'}
+            
+            # Get user phrases
+            db = get_db()
+            user_phrases = list(db.phrases.find({"user_id": session['user_id']}, {'_id': 0}))
+            phrases = [p["phrase"] for p in user_phrases]
+            
+            options = {
+                "model": "nova-2",
+                "language": "en-US",
+                "punctuate": True,
+                "utterances": True,
+                "smart_format": True,
+                "custom_keywords": phrases if phrases else None
+            }
 
-        with open(filepath, 'rb') as audio_file:
-            content = audio_file.read()
-        audio = speech.RecognitionAudio(content=content)
+            response = dg_stt_client.transcription.sync_prerecorded(source, options)
+            
+            if 'results' not in response:
+                return jsonify({'error': 'No speech detected'}), 400
+                
+            transcripts = []
+            for channel in response['results']['channels']:
+                for alternative in channel['alternatives']:
+                    if 'transcript' in alternative:
+                        transcripts.append({
+                            'transcript': alternative['transcript'],
+                            'confidence': f"{alternative['confidence']:.0%}"
+                        })
 
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
-            sample_rate_hertz=48000,  # Changed to match browser recording
-            language_code="en-US",
-            adaptation=speech.SpeechAdaptation(
-                phrase_set_references=[
-                    f"projects/{os.getenv('PROJECT_ID')}/locations/global/phraseSets/{get_user_phrase_set_id(session['user_id'])}"
-                ]
-            ),
-            use_enhanced=True,
-            model="latest_long"
-        )
-
-        response = speech_client.recognize(config=config, audio=audio)
-        transcripts = []
-        for result in response.results:
-            if result.alternatives:
-                transcript = result.alternatives[0].transcript
-                confidence = result.alternatives[0].confidence
-                transcripts.append({
-                    'transcript': transcript,
-                    'confidence': f"{confidence:.0%}"
-                })
-
-        return jsonify({'transcripts': transcripts})
+            return jsonify({'transcripts': transcripts})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/callback', methods=['POST'])
+def deepgram_callback():
+    """Handle Deepgram callback with results"""
+    try:
+        data = request.json
+        request_id = data.get('request_id')
+        
+        if not request_id:
+            return jsonify({'error': 'Missing request_id'}), 400
+            
+        db = get_db()
+        request_record = db.transcription_requests.find_one({'request_id': request_id})
+        
+        if not request_record:
+            return jsonify({'error': 'Unknown request'}), 404
+            
+        # Update the request status
+        db.transcription_requests.update_one(
+            {'request_id': request_id},
+            {'$set': {'status': 'completed', 'results': data}}
+        )
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)

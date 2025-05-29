@@ -19,6 +19,31 @@
         #audioVisualizer { width: 100%; height: 50px; background: #f0f0f0; margin: 10px 0; }
         #results { margin-top: 20px; }
         #results div { background: #f5f5f5; padding: 10px; margin: 5px 0; }
+        .transcript-result {
+    background: #f5f5f5;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 5px;
+}
+
+.play-tts {
+    background: #4CAF50;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    margin: 5px 0;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.play-tts:hover {
+    background: #45a049;
+}
+
+.play-tts:disabled {
+    background: #cccccc;
+    cursor: not-allowed;
+}
     </style>
 </head>
 <body>
@@ -45,7 +70,7 @@
 
     <div class="container">
         <div class="section">
-            <h2>Upload Audio</h2>
+            <h2>Upload Audio for deepgram</h2>
             <form action="/transcribe" method="post" enctype="multipart/form-data">
                 <input type="file" name="file" accept=".wav,.mp3,.flac" required>
                 <button type="submit" class="btn">Transcribe</button>
@@ -227,6 +252,109 @@
                 mediaRecorder.stream.getTracks().forEach(track => track.stop());
             }
         });
+    mediaRecorder.onstop = async () => {
+    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+    audioChunks = [];
+
+    // Create a temporary playback of the original recording
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const originalAudioPlayer = document.createElement('audio');
+    originalAudioPlayer.controls = true;
+    originalAudioPlayer.src = audioUrl;
+    
+    // Send audio to server
+    const formData = new FormData();
+    formData.append('audio_data', audioBlob, 'recording.wav');
+
+    try {
+        statusDisplay.textContent = 'Processing...';
+        const response = await fetch('/upload_audio_blob', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (result.error) {
+            statusDisplay.textContent = 'Error: ' + result.error;
+        } else {
+            statusDisplay.textContent = 'Recording complete!';
+            resultsDiv.innerHTML = '';
+
+            // Add original recording playback
+            const originalDiv = document.createElement('div');
+            originalDiv.innerHTML = '<h3>Original Recording:</h3>';
+            originalDiv.appendChild(originalAudioPlayer);
+            resultsDiv.appendChild(originalDiv);
+
+            if (result.transcripts && result.transcripts.length > 0) {
+                result.transcripts.forEach((transcript, index) => {
+                    const div = document.createElement('div');
+                    div.innerHTML = `
+                        <div class="transcript-result">
+                            <h3>Result ${index + 1}:</h3>
+                            <p><strong>Transcript:</strong> ${transcript.transcript}</p>
+                            <p><strong>Confidence:</strong> ${transcript.confidence}</p>
+                            <button class="play-tts" data-text="${encodeURIComponent(transcript.transcript)}">
+                                Play TTS
+                            </button>
+                            <audio id="tts-audio-${index}" controls style="display:none"></audio>
+                        </div>
+                    `;
+                    resultsDiv.appendChild(div);
+                });
+
+                // Add event listeners for TTS buttons
+                document.querySelectorAll('.play-tts').forEach(button => {
+                    button.addEventListener('click', async function() {
+                        const text = decodeURIComponent(this.getAttribute('data-text'));
+                        const index = this.parentElement.id.split('-')[2];
+                        const audioElement = document.getElementById(`tts-audio-${index}`);
+                        
+                        // Show loading state
+                        this.textContent = 'Generating...';
+                        this.disabled = true;
+                        
+                        try {
+                            // Call your TTS endpoint
+                            const ttsResponse = await fetch('/generate_tts', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    text: text,
+                                    index: index
+                                })
+                            });
+                            
+                            const ttsData = await ttsResponse.json();
+                            
+                            if (ttsData.audio_content) {
+                                audioElement.src = `data:audio/mp3;base64,${ttsData.audio_content}`;
+                                audioElement.style.display = 'block';
+                                audioElement.play();
+                            }
+                        } catch (error) {
+                            console.error('TTS Error:', error);
+                        } finally {
+                            this.textContent = 'Play TTS';
+                            this.disabled = false;
+                        }
+                    });
+                });
+            } else {
+                resultsDiv.innerHTML = '<div>No speech detected</div>';
+            }
+        }
+    } catch (error) {
+        statusDisplay.textContent = 'Error processing audio';
+        console.error('Error:', error);
+    }
+
+    cancelAnimationFrame(animationId);
+    visualizer.innerHTML = '';
+};
     </script>
 </body>
 </html>
