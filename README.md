@@ -68,7 +68,7 @@ A Flask web application that transcribes audio files using DeepGram's speech-to-
       ENV DEEPGRAM_API_KEY=your_deepgram_key_here
       ENV APP_URL=https://<your generated url>.ngrok-free.app
 ```
-### Build and start the container
+### Deploy the webapp
 
 ```
     docker build --no-cache -t speech-to-text-app .
