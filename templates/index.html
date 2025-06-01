@@ -12,38 +12,38 @@
         th { background-color: #f2f2f2; }
         .btn { padding: 8px 12px; cursor: pointer; }
         .btn-danger { background: #dc3545; color: white; border: none; }
+        .btn-primary { background: #2196F3; color: white; border: none; }
+        .btn-success { background: #4CAF50; color: white; border: none; }
         .flashes { background: #ffdddd; border-left: 4px solid #f44336; padding: 10px; margin-bottom: 20px; }
         .user-info { background: #e9f7ef; padding: 10px; border-radius: 5px; }
         .phrase-set-info { background: #e7f4ff; padding: 10px; border-left: 4px solid #2196F3; margin: 10px 0; }
         #recordingStatus { margin: 10px 0; font-weight: bold; }
         #audioVisualizer { width: 100%; height: 50px; background: #f0f0f0; margin: 10px 0; }
         #results { margin-top: 20px; }
-        #results div { background: #f5f5f5; padding: 10px; margin: 5px 0; }
+        
+        /* Transcript Results Styles */
         .transcript-result {
-    background: #f5f5f5;
-    padding: 15px;
-    margin: 10px 0;
-    border-radius: 5px;
-}
-
-.play-tts {
-    background: #4CAF50;
-    color: white;
-    border: none;
-    padding: 8px 12px;
-    margin: 5px 0;
-    cursor: pointer;
-    border-radius: 4px;
-}
-
-.play-tts:hover {
-    background: #45a049;
-}
-
-.play-tts:disabled {
-    background: #cccccc;
-    cursor: not-allowed;
-}
+            background: #f5f5f5;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .play-tts {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            margin: 5px 0;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .play-tts:hover { background: #45a049; }
+        .play-tts:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        
     </style>
 </head>
 <body>
@@ -70,16 +70,16 @@
 
     <div class="container">
         <div class="section">
-            <h2>Upload Audio for deepgram</h2>
+            <h2>Upload Audio for Deepgram</h2>
             <form action="/transcribe" method="post" enctype="multipart/form-data">
                 <input type="file" name="file" accept=".wav,.mp3,.flac" required>
-                <button type="submit" class="btn">Transcribe</button>
+                <button type="submit" class="btn btn-primary">Transcribe</button>
             </form>
 
             <h2>Or Record Audio</h2>
             <div>
-                <button id="startRecording" class="btn">Start Recording</button>
-                <button id="stopRecording" class="btn" disabled>Stop Recording</button>
+                <button id="startRecording" class="btn btn-primary">Start Recording</button>
+                <button id="stopRecording" class="btn btn-danger" disabled>Stop Recording</button>
                 <div id="recordingStatus">Press "Start Recording" to begin</div>
                 <div id="audioVisualizer"></div>
             </div>
@@ -91,7 +91,7 @@
             <form action="/add_phrase" method="post">
                 <input type="text" name="phrase" placeholder="Phrase" required>
                 <input type="number" name="boost" placeholder="Boost" step="0.1" min="0" value="10" required>
-                <button type="submit" class="btn">Add Phrase</button>
+                <button type="submit" class="btn btn-success">Add Phrase</button>
             </form>
 
             <h3>Your Phrases</h3>
@@ -120,241 +120,238 @@
         </div>
     </div>
 
-    <script>
-        let mediaRecorder;
-        let audioChunks = [];
-        const startButton = document.getElementById('startRecording');
-        const stopButton = document.getElementById('stopRecording');
-        const statusDisplay = document.getElementById('recordingStatus');
-        const visualizer = document.getElementById('audioVisualizer');
-        const resultsDiv = document.getElementById('results');
-        let audioContext;
-        let analyser;
-        let dataArray;
-        let animationId;
+    <!-- New Chat Interface Section -->
+    <div class="chat-container">
+        
+        <select class="voice-selector" id="voiceSelector">
+            <option value="aura-asteria-en">Female Voice (Asteria)</option>
+            <option value="aura-luna-en">Female Voice (Luna)</option>
+            <option value="aura-stella-en">Female Voice (Stella)</option>
+            <option value="aura-orion-en">Male Voice (Orion)</option>
+            <option value="aura-arcas-en">Male Voice (Arcas)</option>
+        </select>
+        <audio id="chatAudioPlayer" controls style="display: none; margin-top: 10px;"></audio>
+    </div>
+<script>
+    // Audio Recording and Transcription Script
+    let mediaRecorder;
+    let audioChunks = [];
+    const startButton = document.getElementById('startRecording');
+    const stopButton = document.getElementById('stopRecording');
+    const statusDisplay = document.getElementById('recordingStatus');
+    const visualizer = document.getElementById('audioVisualizer');
+    const resultsDiv = document.getElementById('results');
+    let audioContext;
+    let analyser;
+    let dataArray;
+    let animationId;
 
-        // Set up audio context and analyzer when the page loads
-        function initAudioContext() {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            analyser = audioContext.createAnalyser();
-            analyser.fftSize = 64;
-            const bufferLength = analyser.frequencyBinCount;
-            dataArray = new Uint8Array(bufferLength);
-        }
-
-        // Visualize audio input
-        function visualize() {
-            if (!analyser) return;
-
-            analyser.getByteFrequencyData(dataArray);
-
-            const width = visualizer.offsetWidth;
-            const height = visualizer.offsetHeight;
-            const barWidth = width / dataArray.length;
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d');
-            visualizer.innerHTML = '';
-            visualizer.appendChild(canvas);
-
-            ctx.clearRect(0, 0, width, height);
-
-            for (let i = 0; i < dataArray.length; i++) {
-                const barHeight = (dataArray[i] / 255) * height;
-                const x = i * barWidth;
-                ctx.fillStyle = '#4CAF50';
-                ctx.fillRect(x, height - barHeight, barWidth - 2, barHeight);
-            }
-
-            animationId = requestAnimationFrame(visualize);
-        }
-
-        startButton.addEventListener('click', async () => {
-            try {
-                if (!audioContext) {
-                    initAudioContext();
-                }
-
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
-
-                // Connect audio stream to analyzer for visualization
-                const source = audioContext.createMediaStreamSource(stream);
-                source.connect(analyser);
-
-                mediaRecorder.ondataavailable = event => {
-                    audioChunks.push(event.data);
-                };
-
-                mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                    audioChunks = [];
-
-                    // Send audio to server
-                    const formData = new FormData();
-                    formData.append('audio_data', audioBlob, 'recording.wav');
-
-                    try {
-                        statusDisplay.textContent = 'Processing...';
-                        const response = await fetch('/upload_audio_blob', {
-                            method: 'POST',
-                            body: formData
-                        });
-
-                        const result = await response.json();
-
-                        if (result.error) {
-                            statusDisplay.textContent = 'Error: ' + result.error;
-                        } else {
-                            statusDisplay.textContent = 'Recording complete!';
-                            resultsDiv.innerHTML = '';
-
-                            if (result.transcripts && result.transcripts.length > 0) {
-                                result.transcripts.forEach(transcript => {
-                                    const div = document.createElement('div');
-                                    div.innerHTML = `<strong>Transcript:</strong> ${transcript.transcript}<br>
-                                                    <strong>Confidence:</strong> ${transcript.confidence}`;
-                                    resultsDiv.appendChild(div);
-                                });
-                            } else {
-                                resultsDiv.innerHTML = '<div>No speech detected</div>';
-                            }
-                        }
-                    } catch (error) {
-                        statusDisplay.textContent = 'Error processing audio';
-                        console.error('Error:', error);
-                    }
-
-                    cancelAnimationFrame(animationId);
-                    visualizer.innerHTML = '';
-                };
-
-                mediaRecorder.start();
-                startButton.disabled = true;
-                stopButton.disabled = false;
-                statusDisplay.textContent = 'Recording...';
-                visualize();
-            } catch (error) {
-                console.error('Error:', error);
-                statusDisplay.textContent = 'Error accessing microphone: ' + error.message;
-            }
-        });
-
-        stopButton.addEventListener('click', () => {
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
-                startButton.disabled = false;
-                stopButton.disabled = true;
-                statusDisplay.textContent = 'Processing recording...';
-
-                // Stop all tracks in the stream
-                mediaRecorder.stream.getTracks().forEach(track => track.stop());
-            }
-        });
-    mediaRecorder.onstop = async () => {
-    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-    audioChunks = [];
-
-    // Create a temporary playback of the original recording
-    const audioUrl = URL.createObjectURL(audioBlob);
-    const originalAudioPlayer = document.createElement('audio');
-    originalAudioPlayer.controls = true;
-    originalAudioPlayer.src = audioUrl;
-    
-    // Send audio to server
-    const formData = new FormData();
-    formData.append('audio_data', audioBlob, 'recording.wav');
-
-    try {
-        statusDisplay.textContent = 'Processing...';
-        const response = await fetch('/upload_audio_blob', {
-            method: 'POST',
-            body: formData
-        });
-
-        const result = await response.json();
-
-        if (result.error) {
-            statusDisplay.textContent = 'Error: ' + result.error;
-        } else {
-            statusDisplay.textContent = 'Recording complete!';
-            resultsDiv.innerHTML = '';
-
-            // Add original recording playback
-            const originalDiv = document.createElement('div');
-            originalDiv.innerHTML = '<h3>Original Recording:</h3>';
-            originalDiv.appendChild(originalAudioPlayer);
-            resultsDiv.appendChild(originalDiv);
-
-            if (result.transcripts && result.transcripts.length > 0) {
-                result.transcripts.forEach((transcript, index) => {
-                    const div = document.createElement('div');
-                    div.innerHTML = `
-                        <div class="transcript-result">
-                            <h3>Result ${index + 1}:</h3>
-                            <p><strong>Transcript:</strong> ${transcript.transcript}</p>
-                            <p><strong>Confidence:</strong> ${transcript.confidence}</p>
-                            <button class="play-tts" data-text="${encodeURIComponent(transcript.transcript)}">
-                                Play TTS
-                            </button>
-                            <audio id="tts-audio-${index}" controls style="display:none"></audio>
-                        </div>
-                    `;
-                    resultsDiv.appendChild(div);
-                });
-
-                // Add event listeners for TTS buttons
-                document.querySelectorAll('.play-tts').forEach(button => {
-                    button.addEventListener('click', async function() {
-                        const text = decodeURIComponent(this.getAttribute('data-text'));
-                        const index = this.parentElement.id.split('-')[2];
-                        const audioElement = document.getElementById(`tts-audio-${index}`);
-                        
-                        // Show loading state
-                        this.textContent = 'Generating...';
-                        this.disabled = true;
-                        
-                        try {
-                            // Call your TTS endpoint
-                            const ttsResponse = await fetch('/generate_tts', {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json'
-                                },
-                                body: JSON.stringify({
-                                    text: text,
-                                    index: index
-                                })
-                            });
-                            
-                            const ttsData = await ttsResponse.json();
-                            
-                            if (ttsData.audio_content) {
-                                audioElement.src = `data:audio/mp3;base64,${ttsData.audio_content}`;
-                                audioElement.style.display = 'block';
-                                audioElement.play();
-                            }
-                        } catch (error) {
-                            console.error('TTS Error:', error);
-                        } finally {
-                            this.textContent = 'Play TTS';
-                            this.disabled = false;
-                        }
-                    });
-                });
-            } else {
-                resultsDiv.innerHTML = '<div>No speech detected</div>';
-            }
-        }
-    } catch (error) {
-        statusDisplay.textContent = 'Error processing audio';
-        console.error('Error:', error);
+    function initAudioContext() {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 64;
+        const bufferLength = analyser.frequencyBinCount;
+        dataArray = new Uint8Array(bufferLength);
     }
 
-    cancelAnimationFrame(animationId);
-    visualizer.innerHTML = '';
-};
-    </script>
+    function visualize() {
+        if (!analyser) return;
+
+        analyser.getByteFrequencyData(dataArray);
+
+        const width = visualizer.offsetWidth;
+        const height = visualizer.offsetHeight;
+        const barWidth = width / dataArray.length;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        visualizer.innerHTML = '';
+        visualizer.appendChild(canvas);
+
+        ctx.clearRect(0, 0, width, height);
+
+        for (let i = 0; i < dataArray.length; i++) {
+            const barHeight = (dataArray[i] / 255) * height;
+            const x = i * barWidth;
+            ctx.fillStyle = '#4CAF50';
+            ctx.fillRect(x, height - barHeight, barWidth - 2, barHeight);
+        }
+
+        animationId = requestAnimationFrame(visualize);
+    }
+
+    function addTTSButtonListeners() {
+        document.querySelectorAll('.play-tts').forEach(button => {
+            button.addEventListener('click', async function() {
+                const text = decodeURIComponent(this.getAttribute('data-text'));
+                const parentDiv = this.closest('.transcript-result');
+                const index = parentDiv.id.split('-')[1];
+                const audioElement = document.getElementById(`tts-audio-${index}`);
+                const voice = document.getElementById('voiceSelector').value;
+                
+                console.log('Initiating TTS request:', { text: text.substring(0, 50), voice, index });
+                
+                if (!audioElement) {
+                    console.error('Audio element not found');
+                    alert('Audio playback error: element not found');
+                    return;
+                }
+                
+                this.textContent = 'Generating...';
+                this.disabled = true;
+                
+                try {
+                    const response = await fetch('/generate_tts', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            text: text,
+                            voice: voice,
+                            index: index // Include index in request
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    console.log('TTS response:', data);
+                    
+                    if (!response.ok) {
+                    throw new Error(data.error || `HTTP error! status: ${response.status}`);
+                    }
+
+
+
+                    if (data.audio_content) {
+                        audioElement.src = `data:audio/wav;base64,${data.audio_content}`;
+                        audioElement.style.display = 'block';
+                        await audioElement.play();
+                     } else {
+                    throw new Error('No audio content received');
+                    }
+                   
+                } catch (error) {
+                    console.error('TTS Error:', error);
+                    alert(`TTS Error: ${error.message}`);
+                } finally {
+                    this.textContent = 'Play TTS';
+                    this.disabled = false;
+                }
+            });
+        });
+    }
+
+    startButton.addEventListener('click', async () => {
+        try {
+            if (!audioContext) {
+                initAudioContext();
+            }
+
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+
+            const source = audioContext.createMediaStreamSource(stream);
+            source.connect(analyser);
+
+            mediaRecorder.ondataavailable = event => {
+                audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const formData = new FormData();
+                formData.append('audio_data', audioBlob, 'recording.wav');
+
+                // Add voice parameter to the FormData
+                const voice = document.getElementById('voiceSelector').value;
+                formData.append('voice', voice);
+                
+                
+                audioChunks = [];
+
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const originalAudioPlayer = document.createElement('audio');
+                originalAudioPlayer.controls = true;
+                originalAudioPlayer.src = audioUrl;
+                
+                               
+
+                try {
+                    statusDisplay.textContent = 'Processing...';
+                    const response = await fetch('/upload_audio_blob', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await response.json();
+
+                    if (result.error) {
+                        throw new Error(result.error);
+                        statusDisplay.textContent = 'Error: ' + result.error;
+                    } else {
+                        statusDisplay.textContent = 'Recording complete!';
+                        resultsDiv.innerHTML = '';
+
+                        const originalDiv = document.createElement('div');
+                        originalDiv.innerHTML = '<h3>Original Recording:</h3>';
+                        originalDiv.appendChild(originalAudioPlayer);
+                        resultsDiv.appendChild(originalDiv);
+
+                        if (result.transcripts && result.transcripts.length > 0) {
+                            result.transcripts.forEach((transcript, index) => {
+                                const div = document.createElement('div');
+                                div.innerHTML = `
+                                    <div class="transcript-result" id="result-${index}">
+                                        <h3>Result ${index + 1}:</h3>
+                                        <p><strong>Transcript:</strong> ${transcript.transcript}</p>
+                                        <p><strong>Confidence:</strong> ${transcript.confidence}</p>
+                                        <button class="play-tts" data-text="${encodeURIComponent(transcript.transcript)}">
+                                            Play TTS
+                                        </button>
+                                        <audio id="tts-audio-${index}" controls style="display:none"></audio>
+                                    </div>
+                                `;
+                                resultsDiv.appendChild(div);
+                            });
+
+                            // Add event listeners after elements are created
+                            addTTSButtonListeners();
+                        } else {
+                            resultsDiv.innerHTML = '<div>No speech detected</div>';
+                        }
+                    }
+                } catch (error) {
+                    statusDisplay.textContent = 'Error processing audio';
+                    console.error('Error:', error);
+                }
+
+                cancelAnimationFrame(animationId);
+                visualizer.innerHTML = '';
+            };
+
+            mediaRecorder.start();
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            statusDisplay.textContent = 'Recording...';
+            visualize();
+        } catch (error) {
+            console.error('Error:', error);
+            statusDisplay.textContent = 'Error accessing microphone: ' + error.message;
+        }
+    });
+
+    stopButton.addEventListener('click', () => {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            statusDisplay.textContent = 'Processing recording...';
+            mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        }
+    });
+
+    
+</script>
 </body>
 </html>
