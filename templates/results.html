@@ -62,16 +62,94 @@
             border-radius: 4px;
             border: 1px solid #ddd;
         }
+        /* NEW LLM STATUS STYLES */
+        .llm-status {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            border-left: 4px solid #6c757d;
+        }
+        .llm-processed {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .llm-error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .llm-response {
+            margin-top: 10px;
+            padding: 10px;
+            background: #e8f4f8;
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body>
     <h1>Transcription Results with DeepGram</h1>
+    <div class="llm-processing-status">
+    <h3>LLM Processing Details</h3>
+    {% if llm_processed %}
+        <div class="llm-success">
+            ✅ Enhanced by {{ llm_model }} (Together.ai)
+        </div>
+        <div class="llm-original">
+            <strong>Original:</strong> {{ original_text|default(transcripts[0].original) }}
+        </div>
+    {% else %}
+        <div class="llm-fallback">
+            ⚠️ Using raw transcript (LLM unavailable)
+        </div>
+    {% endif %}
+</div>
 
+<style>
+.llm-processing-status {
+    margin: 20px 0;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 5px;
+    border-left: 4px solid #6c757d;
+}
+.llm-success {
+    color: #28a745;
+    font-weight: bold;
+}
+.llm-fallback {
+    color: #ffc107;
+    font-weight: bold;
+}
+.llm-original {
+    margin-top: 10px;
+    padding: 10px;
+    background: #e8f4f8;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+</style>
     {% if was_chunked %}
     <div class="alert alert-warning">
         Note: Your large audio file was processed in {{ transcripts|length }} segments
     </div>
     {% endif %}
+
+    <!-- NEW LLM STATUS SECTION -->
+    <div class="llm-status">
+        <h3>LLM Processing Status</h3>
+        {% if llm_processed %}
+        <div class="llm-success">
+            ✅ Enhanced by {{ llm_model }}
+        </div>
+        <div class="llm-original">
+            <strong>Original:</strong> {{ original_text }}
+        </div>
+        {% else %}
+        <div class="llm-fallback">
+            ⚠️ Using raw transcript (LLM unavailable)
+        </div>
+        {% endif %}
+    </div>
 
     <div class="phrase-set-info">
         <p>New words will be added to your personal phrase set: <strong>user-{{ session.user_id }}-phrases</strong></p>
@@ -105,8 +183,7 @@
                 <div class="audio-player">
                     <h4>Audio Playback</h4>
                     <audio controls id="audio-{{ loop.index }}">
-                        <!-- <source src="data:audio/wav;base64,{{ item.audio_content }}" type="audio/wav"> -->
-                         <source src="data:audio/mp3;base64,{{ item.audio_content }}" type="audio/mp3">
+                        <source src="data:audio/mp3;base64,{{ item.audio_content }}" type="audio/mp3">
                         Your browser does not support the audio element.
                     </audio>
                     <div class="audio-controls">
