@@ -8,11 +8,17 @@ import tempfile
 from functools import wraps
 import subprocess
 import base64
-from deepgram import Deepgram
+from deepgram import Deepgram # This is the proper LLM for DeepGram Aura but requires a paid subscription
+#from deepgram import DeepgramClient, PrerecordedOptions, SpeakOptions
+import asyncio
+import websockets
+from websockets.sync.client import connect
 import datetime
 import requests
-from gtts import gTTS
+#from gtts import gTTS
 import io
+from together import Together  # Added this import as placeholder for a free to use LLM in the demo: Together/Mistral
+
 
 def base64_encode(value):
     return base64.b64encode(value).decode('utf-8')
@@ -28,6 +34,13 @@ app.secret_key = os.urandom(24).hex()
 dg_stt_client = Deepgram(os.getenv("DEEPGRAM_API_KEY"))
 DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak"
 DEEPGRAM_TTS_API_KEY = os.getenv("DEEPGRAM_API_KEY") 
+DEEPGRAM_LLM_WS_URL = "wss:https://api.deepgram.com/v1/"
+DEEPGRAM_LLM_URL = "https://api.deepgram.com/v1/"
+
+DEEPGRAM_LLM_MODEL = "aura-asteria-en"  # Paid DeepGram Aura LLM model
+# Initialize APIs for Together/Mistral
+#TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")  # Add to your .env
+#TOGETHER_MODEL = "mistralai/Mixtral-8x7B-Instruct-v0.1"  # Free Together/Mistral model
 
 
 # Configuration
@@ -50,6 +63,39 @@ def login_required(f):
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
+async def process_with_deepgram_llm(text, voice_model=DEEPGRAM_LLM_MODEL):
+    """Process text with Deepgram LLM and get TTS response via WebSocket"""
+    try:
+        # Connect to Deepgram's LLM+TTS WebSocket
+        with connect(
+            f"{DEEPGRAM_LLM_WS_URL}&encoding=linear16&sample_rate=16000",
+            additional_headers={"Authorization": f"Token {DEEPGRAM_TTS_API_KEY}"}
+        ) as websocket:
+            
+            # Send the text to Deepgram LLM
+            websocket.send(json.dumps({
+                "type": "Speak",
+                "text": text,
+                "model": voice_model
+            }))
+            
+            # Get the audio response
+            audio_data = bytearray()
+            while True:
+                message = websocket.recv()
+                if isinstance(message, bytes):
+                    audio_data.extend(message)
+                elif isinstance(message, str):
+                    data = json.loads(message)
+                    if data.get("type") == "Finished":
+                        break
+            
+            return base64.b64encode(audio_data).decode('utf-8')
+            
+    except Exception as e:
+        print(f"Deepgram LLM WebSocket error: {str(e)}")
+        return None
+
 # Add this new function to generate TTS audio
 # def generate_tts(text, voice="aura-asteria-en"):
 #     try:
@@ -82,27 +128,40 @@ def login_required(f):
 #         print(f"TTS Generation Error: {str(e)}")
 #         return None      
 
-def generate_tts(text, lang='en'):
+def generate_tts(text, voice, lang='en'):
     """Generate TTS audio using Google's TTS API"""
     try:
-        print(f"Generating Google TTS for: {text[:100]}...")
+        print(f"Generating TTS for: {text[:100]}... with voice {voice} (lang: {lang})")
         
-        # Create in-memory file
-        mp3_fp = io.BytesIO()
+        headers = {
+            "Authorization": f"Token {DEEPGRAM_TTS_API_KEY}",
+            "Content-Type": "application/json"
+        }     
+        # Minimal required payload
+        payload = {"text": text}
         
-        # Generate TTS
-        tts = gTTS(text=text, lang=lang, slow=False)
-        tts.write_to_fp(mp3_fp)
-        mp3_fp.seek(0)
+        # Voice model as query parameter
+        params = {"model": voice}
+
+        print(f"Sending to Deepgram TTS: {payload} with params: {params}")
+        # Make request with both JSON payload and query parameters
+        response = requests.post(
+            DEEPGRAM_TTS_URL,
+            headers=headers,
+            json=payload,
+            params=params,
+            timeout=10
+        )
+        if response.status_code == 200:
+            return base64.b64encode(response.content).decode('utf-8')
+        else:
+            print(f"Deepgram Error: {response.status_code} - {response.text}")
+            return None
         
-        # Convert to base64 for embedding in HTML
-        audio_content = base64.b64encode(mp3_fp.read()).decode('utf-8')
-        print("Google TTS generation successful")
-        return audio_content
         
     except Exception as e:
-        print(f"Google TTS Generation Error: {str(e)}")
-        return None  
+        print(f"TTS Generation Error: {str(e)}")
+        return None
 
 def estimate_audio_duration(filepath):
     """Estimate audio duration using ffprobe"""
@@ -129,21 +188,37 @@ def estimate_audio_duration(filepath):
 @app.route('/generate_tts', methods=['POST'])
 @login_required
 def handle_tts_generation():
-    data = request.json
-    # Map Deepgram voices to Google TTS languages
-    voice_map = {
-        'aura-asteria-en': 'en',
-        'aura-luna-en': 'en',
-        'aura-stella-en': 'en',
-        'aura-orion-en': 'en',
-        'aura-arcas-en': 'en'
-    }
-    lang = voice_map.get(data['voice'], 'en')
-    audio_content = generate_tts(data['text'], lang)
-    return jsonify({
-        'audio_content': audio_content,
-        'index': data['index']
-    })
+    
+    try:
+        data = request.get_json()
+        print("Raw TTS request data:", data)  # Debug incoming request
+
+
+        # Validate required fields
+        if not data or 'text' not in data:
+            print("Missing text parameter")  # Debug
+            return jsonify({'error': 'Missing text parameter'}), 400
+        
+        # Get voice with default if not provided
+        voice = data.get('voice', 'aura-asteria-en')
+        print(f"Generating TTS for text (length: {len(data['text'])}) with voice: {voice}")  # Debug
+
+        # Generate TTS with Deepgra
+        audio_content = generate_tts(data['text'], voice)
+        
+        if not audio_content:
+            print("TTS generation failed")  # Debug
+            return jsonify({'error': 'Failed to generate TTS'}), 500
+            
+        return jsonify({
+            'audio_content': audio_content,
+            'index': data.get('index')
+        })
+       
+        
+    except Exception as e:
+        print(f"TTS Generation Error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 # Auth Routes
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -239,33 +314,159 @@ def delete_phrase(phrase):
 
     return redirect(url_for('index'))
 
+
 @app.route('/transcribe', methods=['POST'])
 @login_required
 def transcribe():
-    print("Transcribe endpoint hit")  # Debug
+    # ===== 1. INITIAL SETUP =====
+    print("\n" + "="*40)
+    print("=== TRANSCRIPTION PIPELINE STARTED ===")
+    print("="*40 + "\n")
+    
+    # ===== 2. FILE VALIDATION =====
     if 'file' not in request.files:
         flash('No file selected')
         return redirect(url_for('index'))
 
     file = request.files['file']
-    print(f"File received: {file.filename}")  # Debug
-
-    if file.filename == '' or not allowed_file(file.filename):
-        flash('Invalid file')
+    if not file or file.filename == '':
+        flash('No file selected')
+        return redirect(url_for('index'))
+    
+    if not allowed_file(file.filename):
+        flash(f'Invalid file type. Allowed: {", ".join(ALLOWED_EXTENSIONS)}')
         return redirect(url_for('index'))
 
+    # ===== 3. AUDIO PROCESSING =====
     try:
-        # Save to temp file
         with tempfile.NamedTemporaryFile(suffix=os.path.splitext(file.filename)[1]) as tmp:
-            print(f"Saving to temp file: {tmp.name}")  # Debug
-            file.save(tmp.name)
-            return process_audio_with_deepgram(tmp.name)
+            # ---- 3.1 Secure File Saving ----
+            try:
+                file.save(tmp.name)
+                print(f"[1/5] Audio saved to: {tmp.name}")
+                print(f"File Info: Size={os.path.getsize(tmp.name)} bytes, Type={file.mimetype}")
+                
+                # Verify audio integrity
+                duration = estimate_audio_duration(tmp.name)
+                if duration <= 0:
+                    raise ValueError("Invalid audio duration (0s)")
+                print(f"Audio validated: Duration={duration:.2f}s")
+                
+            except Exception as e:
+                flash('Error processing audio file')
+                print(f"🚨 File Error: {str(e)}")
+                return redirect(url_for('index'))
+
+            # ---- 3.2 Deepgram STT ----
+            print("\n[2/5] Starting Deepgram STT...")
+            try:
+                with open(tmp.name, 'rb') as audio_file:
+                    stt_response = dg_stt_client.transcription.sync_prerecorded(
+                        {'buffer': audio_file, 'mimetype': file.mimetype},
+                        options={
+                            "punctuate": True,
+                            "utterances": True,
+                            "smart_format": True,
+                            "diarize": False
+                        }
+                    )
+                
+                if not stt_response.get('results'):
+                    raise ValueError("No speech content detected")
+                    
+                original_text = stt_response['results']['channels'][0]['alternatives'][0]['transcript']
+                confidence = stt_response['results']['channels'][0]['alternatives'][0]['confidence']
+                print(f"STT Success: Confidence={confidence:.0%}")
+                print(f"Raw Transcript: {original_text}")
+
+            except Exception as e:
+                flash('Speech recognition failed')
+                print(f"🚨 STT Error: {str(e)}")
+                return redirect(url_for('index'))
+
+            # ---- 3.3 Together.ai LLM ----
+            print("\n[3/5] Enhancing with Mixtral LLM...")
+            try:
+                together_client = Together(api_key=os.getenv("TOGETHER_API_KEY"))
+                llm_response = together_client.chat.completions.create(
+                    model="mistralai/Mixtral-8x7B-Instruct-v0.1",
+                    messages=[
+                        {
+                            "role": "system", 
+                            "content": "Improve this transcript while preserving meaning. Correct grammar and enhance clarity:"
+                        },
+                        {"role": "user", "content": original_text}
+                    ],
+                    temperature=0.3,
+                    max_tokens=500
+                )
+                processed_text = llm_response.choices[0].message.content
+                
+                # Compare original vs enhanced
+                print("\nText Comparison:")
+                print(f"Original: {original_text}")
+                print(f"Enhanced: {processed_text}")
+                print(f"Character Delta: {len(processed_text) - len(original_text)}")
+
+            except Exception as e:
+                print(f"⚠️ LLM Error: {str(e)} - Using original transcript")
+                processed_text = original_text
+
+            # ---- 3.4 Deepgram TTS ----
+            print("\n[4/5] Generating TTS with Deepgram Aura...")
+            try:
+                headers = {
+                    "Authorization": f"Token {DEEPGRAM_TTS_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                tts_response = requests.post(
+                    f"{DEEPGRAM_TTS_URL}?model={DEEPGRAM_LLM_MODEL}",
+                    headers=headers,
+                    json={"text": processed_text},
+                    timeout=10
+                )
+                
+                if tts_response.status_code == 200:
+                    audio_content = base64.b64encode(tts_response.content).decode('utf-8')
+                    print("TTS Success: Audio generated")
+                else:
+                    raise Exception(f"HTTP {tts_response.status_code}: {tts_response.text}")
+
+            except Exception as e:
+                print(f"⚠️ TTS Error: {str(e)}")
+                audio_content = None
+
+            # ===== 4. RESULTS PREPARATION =====
+            print("\n[5/5] Finalizing results...")
+            transcript_data = {
+                'transcript': processed_text,
+                'original': original_text,
+                'confidence': f"{confidence:.0%}",
+                'words': stt_response['results']['channels'][0]['alternatives'][0].get('words', []),
+                'audio_content': audio_content,
+                'processing_stats': {
+                    'stt_time': duration,
+                    'llm_changes': processed_text != original_text
+                }
+            }
+
+            print("\n" + "="*40)
+            print("=== PIPELINE COMPLETED SUCCESSFULLY ===")
+            print("="*40 + "\n")
+            
+            return render_template('results.html',
+                transcripts=[transcript_data],
+                llm_processed=transcript_data['processing_stats']['llm_changes'],
+                llm_model="Mixtral-8x7B",
+                tts_model=DEEPGRAM_LLM_MODEL,
+                original_text=original_text
+            )
 
     except Exception as e:
-        print(f"Transcription failed with error: {str(e)}")  # Debug
-        flash(f'Transcription failed: {str(e)}')
+        print(f"\n🚨🚨 CRITICAL ERROR: {str(e)}")
+        flash('System error during processing')
         return redirect(url_for('index'))
-
+    
 def process_audio_with_deepgram(filepath):
     """Process audio files with Deepgram"""
     # Check file duration
@@ -312,6 +513,29 @@ def process_short_audio(filepath):
         print(f"Error in process_short_audio: {str(e)}")  # Debug
         flash(f"Transcription failed: {str(e)}")
         return redirect(url_for('index'))
+    
+def process_deepgram_response(response):
+    transcripts = []
+    for channel in response['results']['channels']:
+        for alternative in channel['alternatives']:
+            if 'transcript' in alternative:
+                transcript_text = alternative['transcript']
+                print(f"\n[LLM INPUT] Sending to LLM: {transcript_text}\n")  # Debug log
+                
+                # Generate TTS with default voice
+                audio_content = generate_tts(transcript_text, 'en')  # Explicit default voice
+                
+                transcript_item = {
+                    'transcript': transcript_text,
+                    'original': transcript_text,
+                    'confidence': f"{alternative['confidence']:.0%}",
+                    'words': alternative.get('words', []),
+                    'audio_content': audio_content,
+                    'audio_format': 'wav'
+                }
+                transcripts.append(transcript_item)
+                return transcripts
+    
     
 def process_long_audio(filepath):
     """Process long audio files (>1 min) asynchronously"""
@@ -446,9 +670,13 @@ def upload_audio_blob():
             for channel in response['results']['channels']:
                 for alternative in channel['alternatives']:
                     if 'transcript' in alternative:
+                         # FIX: Use the correct voice parameter from frontend
+                        voice = request.form.get('voice', 'aura-asteria-en')
+                        audio_content = generate_tts(alternative['transcript'], voice)
                         transcripts.append({
                             'transcript': alternative['transcript'],
-                            'confidence': f"{alternative['confidence']:.0%}"
+                            'confidence': f"{alternative['confidence']:.0%}",
+                            'audio_content': audio_content  # Will be None if TTS fails
                         })
 
             return jsonify({'transcripts': transcripts})
@@ -480,7 +708,159 @@ def deepgram_callback():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    
+# Uncomment this new route for LLM conversation with Deepgram Aura and comment the other /chat route there after 
+# Or just the commented out part in the route for Together/Mistral and uncomment the part for DeepGram
+# @app.route('/chat', methods=['POST'])
+# @login_required
+# def chat_with_llm():
+#     """
+#     Endpoint to chat with Deepgram's LLM (Aura)
+#     Expects JSON with:
+#     - message: User's text message
+#     - conversation_id: Optional existing conversation ID
+#     - voice: Optional voice model override
+#     """
+#     try:
+#         data = request.json
+#         message = data.get('message')
+#         voice = data.get('voice', DEEPGRAM_LLM_MODEL)
+        
+#         if not message:
+#             return jsonify({'error': 'Message is required'}), 400
+#         # Prepare the LLM request
+#         headers = {
+#             "Authorization": f"Token {DEEPGRAM_TTS_API_KEY}",
+#             "Content-Type": "application/json"
+#         }    
+#         # Prepare the payload according to Deepgram's LLM API requirements
+#         payload = {
+#             "model": data.get('voice', DEEPGRAM_LLM_MODEL),  # Use selected voice or default
+#             "query": message,
+#             "conversation_id": data.get('conversation_id')
+#         }
+        
+#         # Include conversation_id if provided
+#         if 'conversation_id' in data and data['conversation_id']:
+#             payload["conversation_id"] = data['conversation_id']
+        
+#         headers = {
+#             "Authorization": f"Token {DEEPGRAM_TTS_API_KEY}",
+#             "Content-Type": "application/json",
+#             "Accept": "application/json"
+#         }
+        
+       
+#         # Make the LLM request
+#         response = requests.post(
+#             DEEPGRAM_LLM_URL,
+#             headers=headers,
+#             json=payload,
+#             timeout=30
+#         )
+#         if response.status_code != 200:
+#             print(f"Deepgram LLM API Error: {response.status_code} - {response.text}")  # Debug
+#             return jsonify({
+#                 'error': f"LLM API Error: {response.status_code}",
+#                 'details': response.text
+#             }), response.status_code
+            
+#         response_data = response.json()
+     
 
+#         # Generate TTS audio for the response
+#         llm_response = response_data.get('response', '')
+
+#         # Generate TTS audio using the same voice
+#         tts_response = requests.post(
+#             DEEPGRAM_TTS_URL,
+#             headers=headers,
+#             json={
+#                 "text": llm_response,
+#                 "model": voice,
+#                 "encoding": "linear16",
+#                 "container": "wav"
+#             }
+#         )
+
+
+#         audio_content = None
+#         if tts_response.status_code == 200:
+#             audio_content = base64.b64encode(tts_response.content).decode('utf-8')
+#         return jsonify({
+#             'response': llm_response,
+#             'conversation_id': response_data.get('conversation_id'),
+#             'audio_content': audio_content,
+#             'model': voice
+#         })
+        
+#     except Exception as e:
+#         print(f"Chat error: {str(e)}")  # Debug
+#         return jsonify({'error': str(e)}), 500
+
+# # Add this new route for the chat interface
+# # Modified /chat endpoint with Together/Mistral LLM fallback
+@app.route('/chat', methods=['POST'])
+@login_required
+def chat_with_llm():
+    """
+    Endpoint to chat with LLM (using Together.ai free tier now, Deepgram commented for future)
+    """
+    try:
+        data = request.json
+        message = data.get('message')
+        voice = data.get('voice', 'aura-asteria-en')  # Keep voice selection for TTS
+        
+        if not message:
+            return jsonify({'error': 'Message is required'}), 400
+
+        # --- Together.ai Implementation (Free Tier) ---
+        # together_client = Together(api_key=TOGETHER_API_KEY)
+        # llm_response = together_client.chat.completions.create(
+        #     model=TOGETHER_MODEL,
+        #     messages=[{"role": "user", "content": message}]
+        # ).choices[0].message.content
+
+        # --- Deepgram Aura Implementation (Commented for Future Paid Use) ---
+        
+        # Prepare the LLM request
+        headers = {
+            "Authorization": f"Token {DEEPGRAM_TTS_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": voice,
+            "query": message,
+            "conversation_id": data.get('conversation_id')
+        }
+        
+        response = requests.post(
+            DEEPGRAM_LLM_URL,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return jsonify({"error": response.json()}), response.status_code
+            
+        response_data = response.json()
+        llm_response = response_data.get('response', '')
+        
+
+        # Generate TTS audio (using same voice selection)
+        audio_content = generate_tts(llm_response, voice)
+        
+        return jsonify({
+            'response': llm_response,
+            'conversation_id': data.get('conversation_id', ''),  # Empty for Together.ai
+            'audio_content': audio_content,
+            'model': voice
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
