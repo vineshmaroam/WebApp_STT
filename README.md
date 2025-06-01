@@ -11,8 +11,9 @@ A Flask web application that transcribes audio files using DeepGram's speech-to-
   - Upload WAV/MP3/FLAC files
   - Real-time transcription with word-level confidence scores
   - Supports long audio files (chunked processing)
+  - Mistral-8x7B (via Together.ai) LLM
 - **Text-to-Speech Playback**
-  - Google TTS integration
+  - DeepGram TTS integration
   - Audio preview and download
 - **User Authentication**
   - Secure login/registration
@@ -25,7 +26,7 @@ A Flask web application that transcribes audio files using DeepGram's speech-to-
 - **Database**: MongoDB
 - - **APIs**:
   - [Deepgram STT](https://developers.deepgram.com/docs/speech-recognition)
-  - [Google TTS](https://cloud.google.com/text-to-speech)
+  - [LLM Mistral](https://www.together.ai/models/mistral-beb7b)
 
 ## Setup
 
@@ -33,7 +34,8 @@ A Flask web application that transcribes audio files using DeepGram's speech-to-
 
 - Python 3.8+
 - MongoDB Atlas or local MongoDB instance
-- Deepgram API key 
+- Deepgram API key
+- Together/Mistal API key
 - FFmpeg (for audio processing)
 - ngrok (for the webhook)
 
@@ -61,12 +63,14 @@ A Flask web application that transcribes audio files using DeepGram's speech-to-
       DEEPGRAM_API_KEY=your_deepgram_key_here
       MONGODB_URI=mongodb_connection_string
       ENV APP_URL=https://<your generated url>.ngrok-free.app
+      TOGETHER_API_KEY=your_together_key_here
 
   OR Update them in the Dockerfile
 
       ENV MONGODB_URI=mongodb_connection_string
       ENV DEEPGRAM_API_KEY=your_deepgram_key_here
       ENV APP_URL=https://<your generated url>.ngrok-free.app
+      ENV TOGETHER_API_KEY=your_together_key_here
 ```
 ### Deploy the webapp
 
