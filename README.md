@@ -1,4 +1,4 @@
-# Speech Transcription Web App with Google TTS
+# Speech Transcription Web App with DeepGram TTS
 
 A Flask web application that transcribes audio files using DeepGram's speech-to-text (STT) and converts text to speech (TTS) using Google's TTS API.
 
