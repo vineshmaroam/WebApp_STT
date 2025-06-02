@@ -1,9 +1,11 @@
 # Speech Transcription Web App with DeepGram Aura TTS
 
-A Flask web application that transcribes audio files using DeepGram's speech-to-text (STT) and converts text to speech (TTS) using Google's TTS API.
+A Flask web application that transcribes audio files using DeepGram Aura's speech-to-text (STT) and converts text to speech (TTS) using it's TTS API. Though DeepGram Aura combines real-time STT with built-in LLM processing, there is also an LLM (Mistral-8x7B as the LLM processor) that is used to enhance the transcriptions.
 
-![App Screenshot](https://github.com/user-attachments/assets/8e87797a-0d79-4462-b704-3de1a5180aa4)
-![WebApp_done](https://github.com/user-attachments/assets/bde83a6d-44e2-4f10-8950-7e3eb3cf8031)
+![Architecture](https://github.com/user-attachments/assets/8edb3cee-e155-4a93-a20c-780a30f87b39)
+
+![WebApp](https://github.com/user-attachments/assets/a7f7f2b5-033f-4542-b126-047381974400)
+![Transcription](https://github.com/user-attachments/assets/0d5a575d-4c87-4ee1-a3a7-c7c2d8e2f1c7)
 
 ## Key Features
 
